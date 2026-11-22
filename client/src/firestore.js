@@ -109,6 +109,20 @@ export async function write(uid,resource,{ id,data,remove }) {
     }
     return
   }
+  if (resource === 'courses' && id && !remove) {
+    const target = ref(uid,resource,id)
+    return firestoreOperation('update',target,() => runTransaction(db,async tx => {
+      const existing = (await tx.get(target)).data()
+      if (!existing) throw new Error('Course unavailable.')
+      const next = parsed(schemas.courses,{ ...existing,...data })
+      const semester = await tx.get(ref(uid,'semesters',next.semester))
+      if (!semester.exists()) throw new Error('Select an available semester.')
+      const changes = Object.fromEntries(Object.keys(data)
+        .filter(key => Object.hasOwn(next,key))
+        .map(key => [key,next[key]]))
+      tx.update(target,{ ...changes,updatedAt:now() })
+    }))
+  }
   const existing = id && await get(uid,resource,id)
   if (id && !existing) throw new Error('Record unavailable.')
   const batch = writeBatch(db)
