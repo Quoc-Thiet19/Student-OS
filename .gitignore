@@ -1,0 +1,46 @@
+﻿# Dependencies and generated output
+node_modules/
+dist/
+build/
+coverage/
+.vite/
+.vercel/
+.firebase/
+
+# Local configuration and administrator credentials
+.env
+.env.*
+!.env.example
+!.env.reminders.example
+*service-account*.json
+*serviceAccount*.json
+*-firebase-adminsdk-*.json
+application_default_credentials.json
+credentials.json
+*.pem
+*.p12
+*.key
+
+# Logs, test output, and temporary files
+*.log
+cypress/videos/
+cypress/screenshots/
+cypress/downloads/
+test-results/
+playwright-report/
+tmp/
+temp/
+*.tmp
+*.bak
+
+# Database exports
+legacy-*.json
+studentos-data*.json
+firebase-export-*/
+database-exports/
+exports/
+*.bson
+*.dump
+
+# Local command artifact
+/24

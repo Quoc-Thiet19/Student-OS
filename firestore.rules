@@ -1,0 +1,87 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function owner(uid) { return request.auth != null && request.auth.uid == uid; }
+    function validId(id) { return id is string && id.matches('^[a-zA-Z0-9_-]{1,128}$'); }
+    function linked(uid, kind, id) {
+      return validId(id) && existsAfter(/databases/$(database)/documents/users/$(uid)/$(kind)/$(id));
+    }
+    function text(value, max) { return value is string && value.size() <= max; }
+    function label(value) { return text(value,120) && value.size() > 0; }
+    function percent(value) { return value is number && value >= 0 && value <= 100; }
+    function date(value) { return value is string && value.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$'); }
+    function instant(value) { return value is string && value.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$'); }
+    function stamped(d) { return instant(d.createdAt) && instant(d.updatedAt); }
+    function priority(value) { return value in ['low','medium','high','urgent']; }
+    function academic(uid,kind,d) {
+      return stamped(d) && (
+        (kind == 'semesters' && d.keys().hasOnly(['name','start','end','state','createdAt','updatedAt'])
+          && label(d.name) && date(d.start) && date(d.end) && d.end > d.start && d.state in ['planned','active','archived']) ||
+        (kind == 'courses' && d.keys().hasOnly(['name','code','instructor','semester','color','room','description','target','schedule','createdAt','updatedAt'])
+          && label(d.name) && text(d.code,30) && d.code.size() > 0 && text(d.instructor,120) && text(d.room,120)
+          && text(d.description,8000) && d.color is string && d.color.matches('^#[0-9a-fA-F]{6}$')
+          && percent(d.target) && d.schedule is list && d.schedule.size() <= 30 && linked(uid,'semesters',d.semester)) ||
+        (kind == 'assignments' && d.keys().hasOnly(['title','description','course','dueAt','priority','status','estimate','weight','checklist','completedAt','createdAt','updatedAt'])
+          && label(d.title) && text(d.description,8000) && instant(d.dueAt) && priority(d.priority)
+          && d.status in ['not started','in progress','completed'] && d.estimate is int && d.estimate >= 0 && d.estimate <= 10080
+          && (d.weight == null || percent(d.weight)) && d.checklist is list && d.checklist.size() <= 100
+          && (d.status == 'completed' ? instant(d.completedAt) : d.completedAt == null) && linked(uid,'courses',d.course)) ||
+        (kind == 'assessments' && d.keys().hasOnly(['name','course','weight','earned','maximum','dueAt','completed','createdAt','updatedAt'])
+          && label(d.name) && percent(d.weight) && d.maximum is number && d.maximum > 0 && d.maximum <= 100000
+          && d.completed is bool && (d.earned == null ? !d.completed : d.earned is number && d.earned >= 0 && d.earned <= d.maximum)
+          && (d.dueAt == null || instant(d.dueAt)) && linked(uid,'courses',d.course)) ||
+        (kind == 'calendar' && d.keys().hasOnly(['title','course','type','start','end','description','createdAt','updatedAt'])
+          && label(d.title) && text(d.description,8000) && d.type in ['class','exam','study','personal']
+          && instant(d.start) && instant(d.end) && d.end > d.start && (d.course == null || linked(uid,'courses',d.course)))
+      );
+    }
+    match /users/{uid}/{kind}/{id} {
+      allow read, delete: if owner(uid) && kind in ['semesters','courses','assignments','assessments','calendar','study-sessions','grade-history','notifications','preferences'];
+      allow create, update: if owner(uid) && validId(id) && academic(uid,kind,request.resource.data);
+    }
+    match /users/{uid}/study-sessions/{id} {
+      allow create: if owner(uid) && session(uid,id,request.resource.data);
+      allow update: if owner(uid) && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['course','assignment'])
+        && (request.resource.data.course == null || request.resource.data.course == resource.data.course)
+        && (request.resource.data.assignment == null || request.resource.data.assignment == resource.data.assignment);
+      function session(uid,id,d) {
+        return d.keys().hasOnly(['course','assignment','start','end','seconds','status','key','createdAt','updatedAt'])
+          && stamped(d) && instant(d.start) && instant(d.end) && d.end > d.start
+          && d.seconds is int && d.seconds >= 1 && d.seconds <= 10800 && d.status == 'completed'
+          && id == d.key && id.matches('^[a-fA-F0-9-]{36}$')
+          && (d.course == null || linked(uid,'courses',d.course))
+          && (d.assignment == null || (linked(uid,'assignments',d.assignment)
+            && getAfter(/databases/$(database)/documents/users/$(uid)/assignments/$(d.assignment)).data.course == d.course));
+      }
+    }
+    match /users/{uid}/grade-history/{id} {
+      allow create, update: if owner(uid) && request.resource.data.keys().hasOnly(['course','day','grade'])
+        && date(request.resource.data.day) && percent(request.resource.data.grade)
+        && id == request.resource.data.course + '_' + request.resource.data.day
+        && linked(uid,'courses',request.resource.data.course);
+    }
+    match /users/{uid}/notifications/{id} {
+      allow create: if owner(uid) && id.matches('^[a-f0-9]{64}$')
+        && request.resource.data.keys().hasOnly(['key','category','title','destination','visible','readAt','createdAt'])
+        && text(request.resource.data.key,256) && text(request.resource.data.title,256)
+        && request.resource.data.category in ['overdue','due soon','exam','study','class']
+        && request.resource.data.destination in ['/app/assignments','/app/calendar']
+        && request.resource.data.visible == true && request.resource.data.readAt == null && instant(request.resource.data.createdAt);
+      allow update: if owner(uid) && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['readAt'])
+        && instant(request.resource.data.readAt);
+    }
+    match /users/{uid}/preferences/settings {
+      allow create, update: if owner(uid) && settings(uid,request.resource.data);
+      function settings(uid,d) {
+        return d.keys().hasOnly(['theme','timezone','firstDay','semester','gradingScale','priority','focus','short','long','inApp','email','reminderMinutes','frequency'])
+          && d.theme in ['system','light','dark'] && text(d.timezone,100) && d.firstDay is int && d.firstDay >= 0 && d.firstDay <= 6
+          && (d.semester == null || linked(uid,'semesters',d.semester)) && d.gradingScale is list && d.gradingScale.size() <= 30
+          && priority(d.priority) && minutes(d.focus) && minutes(d.short) && minutes(d.long)
+          && d.inApp is bool && d.email is bool && d.reminderMinutes is int && d.reminderMinutes >= 5 && d.reminderMinutes <= 10080
+          && d.frequency in ['once','daily'];
+      }
+      function minutes(n) { return n is int && n >= 1 && n <= 180; }
+    }
+  }
+}
+
